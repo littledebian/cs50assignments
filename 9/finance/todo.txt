@@ -21,7 +21,7 @@ not impl'd apology - new image
    done, but failed to emulate original apology
 
 backup to github
-unique column constraints on sql
+unique column constraints on sql.
 
 extras:add watchlist
    leaderboard
