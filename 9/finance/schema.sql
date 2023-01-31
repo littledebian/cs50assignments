@@ -32,3 +32,8 @@
 --    FOREIGN KEY (user_id) REFERENCES users(id),
 --    FOREIGN KEY (asset_id) REFERENCES assets(id)
 -- );
+-- CREATE TABLE settings (
+--     user_id INTEGER,
+--    theme TEXT NOT NULL DEFAULT 'light',
+--    FOREIGN KEY (user_id) REFERENCES users(id)
+-- );
