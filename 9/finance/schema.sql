@@ -10,7 +10,8 @@
 --    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
 --    class TEXT NOT NULL, -- class: stock, etf, option, fx
 --    symbol TEXT NOT NULL,
---    name TEXT NOT NULL
+--    name TEXT NOT NULL,
+--    price NUMERIC
 -- );
 
 -- CREATE TABLE holdings (
