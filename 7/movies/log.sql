@@ -1,0 +1,131 @@
+-- /* QUERIES */ --
+--
+-- 1. titles of movies released in 2008
+-- SELECT title FROM movies WHERE year = 2008;
+--
+-- 2. birth year of Emma Stone
+-- SELECT birth FROM people WHERE name = 'Emma Stone';
+--
+-- 3. titles of all movies with a release date on or after 2018, in alphabetical order
+-- SELECT title FROM movies WHERE year >= 2018 ORDER BY title ASC;
+--
+-- 4. number of movies with an IMDb rating of 10.0
+-- SELECT count(*) FROM ratings WHERE rating = 10.0;
+--
+-- 5. titles and release years of all Harry Potter movies, in chronological order
+-- SELECT title, year FROM movies WHERE title LIKE 'Harry Potter%' ORDER BY year ASC;
+--
+-- 6. average rating of all movies released in 2012
+-- SELECT AVG(rating)
+-- FROM   ratings
+-- WHERE  movie_id IN
+--            (SELECT id
+--            FROM    movies
+--            WHERE   year = 2012);
+--
+-- 7. movies released in 2010 and their ratings, in descending order by rating
+--    for movies with the same rating, order them alphabetically by title
+-- SELECT    title, rating
+-- FROM      movies m, ratings r
+-- WHERE     m.id = r.movie_id
+-- and       year = 2010
+-- ORDER BY  rating DESC, title ASC;
+--
+-- 8. names of all people who starred in Toy Story
+-- SELECT  name
+-- FROM    people p,
+--         stars s,
+--         movies m
+-- WHERE   p.id = s.person_id
+-- AND     s.movie_id = m.id
+-- AND     m.title = 'Toy Story';
+--
+-- 9. names of all people who starred in a movie released in 2004, ordered by birth year
+-- SELECT name
+-- FROM   people p
+-- WHERE  p.id IN
+--         (SELECT DISTINCT
+--                  person_id
+--         FROM     stars s
+--         WHERE    s.movie_id IN
+--                 (SELECT id
+--                 FROM movies
+--                 WHERE year = 2004))
+-- ORDER BY birth DESC;
+-- --
+-- 10. names of all people who have directed a movie that received a rating of at least 9.0
+-- SELECT  name
+-- FROM    people
+-- WHERE   id IN
+--         (SELECT DISTINCT
+--                 person_id
+--         FROM    directors d,
+--                 ratings r
+--         WHERE   d.movie_id = r.movie_id
+--         AND     rating >= 9.0);
+--
+-- 11. titles of the five highest rated movies (in order) that Chadwick Boseman starred in, starting with the highest rated
+-- SELECT  title
+-- FROM    movies m,
+--         ratings r
+-- WHERE   m.id = r.movie_id
+-- AND     m.id IN
+--         (SELECT movie_id
+--         FROM    stars s,
+--                 people p
+--         WHERE   s.person_id = p.id
+--         AND     name = 'Chadwick Boseman')
+-- ORDER BY rating DESC LIMIT 5;
+--
+-- 12. titles of all movies in which both Johnny Depp and Helena Bonham Carter starred
+-- SELECT title
+-- FROM   movies
+-- WHERE  id IN
+--         (SELECT movie_id
+--         FROM    stars s,
+--                 people p
+--         WHERE   s.person_id = p.id
+--         AND     name = 'Helena Bonham Carter'
+
+--         INTERSECT
+
+--         SELECT  movie_id
+--         FROM    stars s,
+--                 people p
+--         WHERE   s.person_id = p.id
+--         AND     name = 'Johnny Depp');
+--
+-- 13. names of all people who starred in a movie in which Kevin Bacon also starred
+-- SELECT  name
+-- FROM    people
+-- WHERE   name != 'Kevin Bacon'
+-- AND     id IN
+--         (SELECT DISTINCT
+--                 person_id
+--         FROM    stars s
+--         WHERE   s.movie_id IN
+--                 (SELECT m.id
+--                 FROM    movies m,
+--                         stars s,
+--                         people p
+--                 WHERE   s.movie_id = m.id
+--                 AND     s.person_id = p.id
+--                 AND     name = 'Kevin Bacon'
+--                 AND     birth = 1958));
+--
+--
+--
+    -- /* TABLE CHECKS */ --
+-- Executing 1.sql results in a table with 1 column and 10,050 rows.
+-- Executing 2.sql results in a table with 1 column and 1 row.
+-- Executing 3.sql results in a table with 1 column and 88,918 rows.
+-- Executing 4.sql results in a table with 1 column and 1 row.
+-- Executing 5.sql results in a table with 2 columns and 12 rows.
+-- Executing 6.sql results in a table with 1 column and 1 row.
+-- Executing 7.sql results in a table with 2 columns and 7,085 rows.
+-- Executing 8.sql results in a table with 1 column and 4 rows.
+-- Executing 9.sql results in a table with 1 column and 18,946 rows.
+-- Executing 10.sql results in a table with 1 column and 3,392 rows.
+-- Executing 11.sql results in a table with 1 column and 5 rows.
+-- Executing 12.sql results in a table with 1 column and 7 rows.
+-- Executing 13.sql results in a table with 1 column and 182 rows.
