@@ -5,7 +5,7 @@ from flask import Flask, flash, redirect, render_template, request, session
 from flask_session import Session
 from tempfile import mkdtemp
 from werkzeug.security import check_password_hash, generate_password_hash
-from helpers import apology, login_required, lookup, usd
+from helpers import apology, login_required, lookup, Portfolio, usd
 
 
 # Configure application
@@ -22,13 +22,14 @@ Session(app)
 # Configure CS50 Library to use SQLite database
 db = SQL("sqlite:///finance.db")
 
-# Make sure API key is set
-api = "iex.txt"
-with open(api, 'r') as file:
-    line = file.read()
-os.environ["API_KEY"] = line
-if not os.environ.get("API_KEY"):
-    raise RuntimeError("API_KEY not set")
+dev = True
+if not dev:
+    # Read api key
+    with open("api.txt", 'r') as file:
+        os.environ["API_KEY"] = file.read()    
+    if not os.environ.get("API_KEY"):
+        raise RuntimeError("API_KEY not set")
+
 
 @app.after_request
 def after_request(response):
@@ -50,14 +51,15 @@ def index():
         # Toggle theme preference
         if "mood" in request.form:
             id = session["user_id"]
-            row = db.execute("select * from settings where user_id=?", id)
+            row = db.execute("SELECT * FROM settings WHERE user_id=?", id)
             theme = row[0]["theme"]
             if theme == "light":
-                db.execute("update settings set theme='dark' where user_id=?", id)
+                db.execute("UPDATE settings SET theme='dark' WHERE user_id=?", id)
             else:
-                db.execute("update settings set theme='light' where user_id=?", id)
+                db.execute("UPDATE settings SET theme='light' WHERE user_id=?", id)
             return redirect("/")
 
+        # have this turned off while we sort out new api functionality
         # For all asset id in holdings
         tab = db.execute("SELECT symbol FROM assets, holdings\
             WHERE holdings.asset_id=assets.id")
@@ -70,94 +72,85 @@ def index():
 
             # Update our assets db
             db.execute("UPDATE assets SET price=? WHERE symbol=?", price, symbol)
-
         return redirect("/")
 
     # GET
     else:
         user_id = session["user_id"]
-        if user_id == 1:
-            admin = True
-        else:
-            admin = False
-        row = db.execute("SELECT * FROM users WHERE id=?", user_id)
+        row = db.execute("SELECT * FROM users, settings WHERE settings.user_id=users.id AND users.id=?", user_id)
         user = row[0]["username"]
         cash = row[0]["cash"]
-
-        # User preferences - theme only for now
-        # prefs = {}
-        row = db.execute("select * from settings where user_id=?", user_id)
         session["theme"] = row[0]["theme"]
 
         # Query db for holdings
-        tab = db.execute("SELECT symbol, name, qty, price FROM holdings, assets\
-            WHERE holdings.asset_id=assets.id\
-            AND holdings.user_id=?", user_id)
-
+        holdings = []
+        tab = db.execute("SELECT symbol, name, qty, price, qty*price\
+                        FROM    holdings h, assets a\
+                        WHERE   h.asset_id=a.id\
+                        AND     h.user_id=?", user_id)
+        
+        # User portfolio empty
+        if len(tab) == 0:
+            session["portfolio"] = Portfolio(cash, holdings)
+            return render_template("newuser.html", user=user, cash=cash)
+        
         # Create portfolio
-        if len(tab) == 0:   # user's portfolio empty
-            return render_template("index.html", user=user, cash=cash, holdings=None, sum=None, total=None, admin=admin)
-        else:
-            holdings = []
-            for row in range(len(tab)):
-                symbol = tab[row]["symbol"]
-                name = tab[row]["name"]
-                qty = tab[row]["qty"]
-                price = tab[row]["price"]
-                value = round(float(qty * price), 2)   # can do this with sql
-                hodl = {
-                    "symbol": symbol,
-                    "name": name,
-                    "qty": qty,
-                    "price": price,
-                    "value": value
-                    }
-                holdings.append(hodl)
+        sum = 0
+        for row in range(len(tab)):
+            value = round(tab[row]["qty*price"], 2)
+            hodl = {
+                "symbol": tab[row]["symbol"],
+                "name": tab[row]["name"],
+                "qty": tab[row]["qty"],
+                "price": tab[row]["price"],
+                "value": value
+            }
+            holdings.append(hodl)
+            sum += hodl["value"]
+        total = sum + cash
 
-            # Sum portolio value
-            sum = 0
-            for i in range(len(holdings)):
-                sum += holdings[i]["value"]
-            total = sum + cash
+        # Keep user portfolio in session
+        session["portfolio"] = Portfolio(cash, holdings)
 
-            # Expanded view data
-            table = []          # get symbols for user's recent trades
-            tb = db.execute("select distinct assets.price, symbol, name from assets, trades\
-                    where trades.asset_id=assets.id\
-                    and trades.user_id=?\
-                    order by time desc", user_id)
+        # Expanded view data - get symbols for user's recent trades
+        table = []
+        tb = db.execute("SELECT DISTINCT\
+                                a.price, symbol, name\
+                        FROM    assets a, trades t\
+                        WHERE   t.asset_id=a.id\
+                        AND     t.user_id=?\
+                        ORDER BY time DESC", user_id)
+        for row in range(len(tb)):
+            d = {
+                "price": tb[row]["price"],
+                "symbol": tb[row]["symbol"],
+                "name": tb[row]["name"]
+            }
+            table.append(d)
+            if len(table) == 25:
+                break
+
+        # Fill in table with generic records - filter duplicates - hacky
+        if len(table) < 25:
+            tb = db.execute("SELECT price, symbol, name FROM assets LIMIT 25")
             for row in range(len(tb)):
-                d = {
-                    "price": tb[row]["price"],
-                    "symbol": tb[row]["symbol"],
-                    "name": tb[row]["name"]
-                }
-                table.append(d)
-                if len(table) == 25:
-                    break
+                tb[row]["match"] = 0
+                for i in range(len(table)):
+                    if tb[row]["symbol"] == table[i]["symbol"]:
+                        tb[row]["match"] += 1
 
-            # Fill in table with generic records - filter duplicates - hacky
-            if len(table) < 25:
-                tb = db.execute("select price, symbol, name from assets limit 25")
-                for row in range(len(tb)):
-                    tb[row]["match"] = 0
-                    for i in range(len(table)):
-                        if tb[row]["symbol"] == table[i]["symbol"]:
-                            tb[row]["match"] += 1
+                if tb[row]["match"] == 0:
+                    d = {
+                        "price": tb[row]["price"],
+                        "symbol": tb[row]["symbol"],
+                        "name": tb[row]["name"]
+                    }
+                    table.append(d)
+                    if len(table) == 25:
+                        break
 
-                for row in range(len(tb)):
-                    if tb[row]["match"] == 0:
-                        d = {
-                            "price": tb[row]["price"],
-                            "symbol": tb[row]["symbol"],
-                            "name": tb[row]["name"]
-                        }
-                        table.append(d)
-                        if len(table) == 25:
-                            break
-
-            return render_template("advanced.html", user=user, cash=cash, table=table,\
-                                                    holdings=holdings, sum=sum, total=total, admin=admin)
+        return render_template("advanced.html",\
+            holdings=holdings, user=user, cash=cash, table=table, sum=sum, total=total)
 
 
 @app.route("/buy", methods=["GET", "POST"])
@@ -170,156 +163,112 @@ def buy():
         return render_template("buy.html")
 
     # POST
+    user_id = session["user_id"]
+    p = session["portfolio"]
+    max = None
+    dollars = None
+    try:
+        symbol = request.form.get("symbol").upper()
+    except:
+        return redirect("/buy")
+    if symbol == '':
+        return redirect("/buy")
+
+    # Max BUY order
+    if "maximum-order-size" in request.form:
+        max = True
+    
+    # Trade dollar value instead of shares
+    elif "dollars" in request.form:
+        value = round(float(request.form["dollars"]), 2)
+        dollars = True
+
+    # Quick-order - shares from quick order form
+    elif "quick-order" in request.form:
+        shares = round(float(request.form.get("shares")), 2)
+        multi = int(request.form.get("multiplier"))
+        if not shares or not shares > 0:
+            flash("invalid quantity")
+            return redirect("/")
+        else:
+            shares = (shares * multi)
+
+    # Standard buy order, get shares
     else:
-        user_id = session["user_id"]
-        if user_id == 1:
-            admin = True
+        try:
+            shares = request.form.get("shares")
+            shares = round(float(shares), 2)
+        except:
+            flash("invalid quantity")
+            return redirect("/buy")
+        if not shares or not shares > 0:
+            flash("invalid quantity")
+            return redirect("/buy")
+
+    # Symbol lookups
+    row = db.execute("SELECT * FROM assets WHERE symbol=?", symbol)
+    if len(row) == 0:      # not in our db, not supported under dev config
+        unseen = True
+    else:
+        asset_id = row[0]["id"]
+        unseen = False
+
+    # we are admin - lookup is a dummy fn #
+    if dev:
+        quote = lookup(row)
+    else:
+        quote = lookup(symbol)
+        if quote is None:
+            flash("symbol not found")
+            return render_template("buy.html")
+    symbol = quote["symbol"]
+    name = quote["name"]
+    price = quote["price"]
+
+    # Check user cash
+    cash = p.cash
+    if max:
+        shares = round((cash / price), 2)
+        cash = 0
+    else:
+        if dollars:
+            shares = round((value / price), 2)
         else:
-            admin = False
-
-        if "maximum-order-size" in request.form:    # Max order size
-            try:
-                symbol = request.form.get("symbol").upper()
-            except:
-                return redirect("/buy")
-            if symbol == '':
-                return redirect("/buy")
-            row = db.execute("SELECT * FROM assets WHERE symbol=?", symbol)
-            if len(row) == 0:      # not in our db
-                unseen = True
-            else:
-                asset_id = row[0]["id"]
-                unseen = False
-
-            # Lookup quote
-            if admin:
-                row = db.execute("SELECT * FROM assets WHERE symbol=?", symbol)
-                price = row[0]["price"]
-            else:
-                if lookup(symbol) is None:
-                    flash("symbol not found")
-                    return render_template("buy.html")
-                else:
-                    quote = lookup(symbol)
-                    price = quote["price"]
-
-            # Get user cash and current holdings
-            row = db.execute("SELECT * FROM users WHERE id=?", user_id)
-            cash = row[0]["cash"]
-            if unseen:
-                qty = 0
-            else:
-                row = db.execute("SELECT * FROM holdings, assets, users\
-                        WHERE holdings.asset_id=assets.id\
-                        AND holdings.user_id=users.id\
-                        AND assets.id=? AND users.id=?", asset_id, user_id)
-                if len(row) == 0: # not in user holdings or watching
-                    qty = 0
-                    new = True
-                else:
-                    qty = row[0]["qty"]
-                    new = False
-
-            # Update records - holdings, user cash, assets, trades
-            shares = (cash / price)
-            shares = round(shares, 2)
-            qty += shares
-            if unseen:
-                asset_id = db.execute("insert into assets (class, symbol, name) values ('stock',?,?)", quote["symbol"], quote["name"])
-            else:
-                db.execute("update assets set price=? where id=?", price, asset_id)      # off for develop
-            if new:
-                db.execute("insert into holdings (asset_id, qty, user_id) values (?,?,?)", asset_id, qty, user_id)
-            else:
-                db.execute("update holdings set qty=? where holdings.asset_id=? and holdings.user_id=?", qty, asset_id, user_id)
-            db.execute("update users set cash=0 where id=?", user_id)
-            db.execute("INSERT INTO trades (type, user_id, asset_id, qty, price, time)\
-                    VALUES ('buy',?,?,?,?,datetime('now'))", user_id, asset_id, shares, price)
-
-            flash("executed")
-            return redirect("/")
-
-        else:
-            if "quick-order" in request.form:    # symbol and qty from quick order form, then follow same
-                symbol = request.form.get("symbol")
-                if not symbol:
-                    flash('symbol err')
-                    return redirect("/")
-                shares = round(float(request.form.get("shares")), 2)
-                multi = int(request.form.get("multiplier"))
-                if not shares or not shares > 0:
-                    flash("invalid quantity")
-                    return redirect("/")
-                else:
-                    shares = (shares * multi)
-
-            else: # Standard buy order
-                symbol = request.form.get("symbol").upper()
-                if symbol == '':
-                    return render_template("buy.html")
-                shares = request.form.get("shares")
-                if not shares or not int(shares) > 0:
-                    flash("invalid quantity")
-                    return render_template("buy.html")
-                else:
-                    shares = round(float(request.form.get("shares")), 2)
-
-
-            # Lookup quote and add symbol to our db
-            if user_id == 1:    # we are admin
-                row = db.execute("select * from assets where symbol=?", symbol)
-                if len(row) == 0:
-                    flash('bad symbol')
-                    return render_template("buy.html")
-                else:
-                    price = row[0]["price"]
-                    price = round(float(price), 2)
-            else:
-                if not lookup(symbol):
-                    flash('symbol not found')
-                    return render_template("buy.html")
-                else:
-                    quote = lookup(symbol)
-                    symbol = quote["symbol"]
-                    name = quote["name"]
-                    price = quote["price"]
-
-            # Validate input
-            row = db.execute("SELECT * from users WHERE id=?", user_id)
-            cash = row[0]["cash"]
             value = (price * shares)
-            if value > cash:
-                flash("rejected: low cash")
-                return render_template("buy.html")
-            else:
-                cash -= value
+        if value > cash:
+            flash("rejected: low cash")
+            return render_template("buy.html")
+        else:
+            cash -= value
 
-            # Update records - assets, holdings, cash, trades
-            row = db.execute("SELECT * FROM assets WHERE symbol=?", symbol)
-            if len(row) == 0:   # not in our db
-                asset_id = db.execute("insert into assets (class, symbol, name, price) values ('stock',?,?,?)", symbol, name, price)   # assume class="stock"
-            else:
-                asset_id = row[0]["id"]
-                db.execute("update assets set price=? where id=?", price, asset_id)
-            row = db.execute("SELECT id, qty FROM holdings\
-                WHERE holdings.asset_id=? AND holdings.user_id=?", asset_id, user_id)
-            if len(row) == 0:   # asset not in user portfolio
-                db.execute("INSERT INTO holdings (asset_id, qty, user_id) VALUES (?, ?, ?)", asset_id, shares, user_id)
-            else:   # asset exists in portfolio or watching
-                hodl_id = row[0]["id"]
-                qty = row[0]["qty"]
-                qty += shares
-                db.execute("UPDATE holdings SET qty=? WHERE id=?", qty, hodl_id)
+    # Get user holdings for this asset
+    new_hodl = True
+    hodl = p.holdings
+    for i in range(len(hodl)):
+        if symbol == hodl[i]["symbol"]:
+            qty = hodl[i]["qty"]
+            new_hodl = False
+            break
 
-            db.execute("UPDATE users SET cash=? WHERE id=?", cash, user_id)
-            db.execute("INSERT INTO trades (type, user_id, asset_id, qty, price, time)\
-                VALUES ('buy',?,?,?,?,datetime('now'))", user_id, asset_id, shares, price)
+    # Update records - assets, holdings, cash, trades
+    if unseen:
+        asset_id = db.execute("INSERT INTO assets (class, symbol, name, price) VALUES ('stock',?,?,?)", symbol, name, price)
+    else:
+        db.execute("UPDATE assets SET price=? WHERE id=?", price, asset_id)
+    if new_hodl:  # not in user holdings or watching
+        db.execute("INSERT INTO holdings (asset_id, qty, user_id) VALUES (?, ?, ?)", asset_id, shares, user_id)
+    else:
+        qty += shares
+        db.execute("UPDATE holdings SET qty=? WHERE asset_id=? and user_id=?", qty, asset_id, user_id)
+    db.execute("UPDATE users SET cash=? WHERE id=?", cash, user_id)
+    db.execute("INSERT INTO trades (type, user_id, asset_id, qty, price, time)\
+        VALUES ('buy',?,?,?,?,datetime('now'))", user_id, asset_id, shares, price)
 
-            if shares > 100:
-                flash("executed")
-            else:
-                flash("done")
-            return redirect("/")
+    if max or shares > 100:
+        flash("executed")
+    else:
+        flash("done")
+    return redirect("/")
 
 
 @app.route("/history")
@@ -327,24 +276,15 @@ def buy():
 def history():
     """Show history of transactions"""
 
-    # Create view of db
-    tab = db.execute("SELECT type, symbol, qty, trades.price, time FROM trades, assets, users\
-            WHERE trades.asset_id=assets.id \
-            AND trades.user_id=users.id\
-            AND users.id=? ORDER BY time DESC", session["user_id"])
+    # Query for user trades
+    trades = db.execute("SELECT type, symbol, qty, t.price, time\
+                    FROM    trades t, assets a, users u\
+                    WHERE   t.asset_id=a.id \
+                    AND     t.user_id=u.id\
+                    AND     u.id=?\
+                    ORDER BY time DESC", session["user_id"])
 
-    # Build trades list
-    trades = []
-    for row in range(len(tab)):
-        tx = {
-            "type": tab[row]["type"],
-            "symbol": tab[row]["symbol"],
-            "qty": tab[row]["qty"],
-            "price": tab[row]["price"],
-            "time": tab[row]["time"]
-        }
-        trades.append(tx)   # can just append row or need to define object? tx = tab[row]
-    return render_template("trades.html", trades=trades)
+    return render_template("history.html", trades=trades)
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -360,23 +300,24 @@ def login():
         # Ensure username was submitted
         if not request.form.get("username"):
             flash("please enter username")
-            return render_template("login.html")
-            return redirect("/login")
-            return apology_err("must provide username", 403)
+            return redirect("login.html")
 
         # Ensure password was submitted
-        elif not request.form.get("password"):
-            return apology("must provide password", 403)
+        if not request.form.get("password"):
+            flash("please enter password")
+            return redirect("login.html")
 
         # Query database for username
         rows = db.execute("SELECT * FROM users WHERE username = ?", request.form.get("username"))
 
         # Ensure username exists and password is correct
         if len(rows) != 1 or not check_password_hash(rows[0]["hash"], request.form.get("password")):
-            return apology("invalid username and/or password", 403)
+            flash("invalid credentials")
+            return redirect("login.html")
 
         # Remember which user has logged in
         session["user_id"] = rows[0]["id"]
+        session["portfolio"] = None
 
         # Redirect user to home page
         return redirect("/")
@@ -397,8 +338,6 @@ def logout():
     return redirect("/")
 
 
-
-
 @app.route("/quote")
 @login_required
 def quote():
@@ -409,85 +348,74 @@ def quote():
 
 @app.route("/quoted")
 @login_required
-def return_quote():
+def get_quote():
     """Request a stock quote via a pre-configured API"""
 
-    if "quick-search" in request.args:
-        gohome = True
-    else:
-        gohome = False
-    s = request.args.get("name").upper()
+    symbol = request.args.get("name").upper()
 
     # List of symbols in user holdings
-    user_id = session["user_id"]
-    holdings = []
-    tb = db.execute("select symbol from assets, holdings where holdings.asset_id=assets.id\
-            and holdings.user_id=?", user_id)
-    for i in range(len(tb)):
-        symbol = tb[i]["symbol"]
-        holdings.append(symbol)
+    symbols = []
+    hodl = session["portfolio"].holdings
+    for i in range(len(hodl)):
+        symbols.append(hodl[i]["symbol"])
 
     # Retrieve asset symbol - logic follows dynamic table data, see /search route
-    row = db.execute("select symbol from assets where symbol=? or name like ? limit 1", s, '%'+ s +'%')
+    row = db.execute("SELECT symbol FROM assets WHERE symbol=? OR name LIKE ? LIMIT 1", symbol, '%'+ symbol +'%')
     if len(row) == 0:   # not in our db
-        symbol = s
 
-        # Lookup
-        if not lookup(symbol):
-            flash('symbol not found')
+        # Lookup and insert new asset
+        quote = lookup(symbol)
+        if quote is None:
+            flash("symbol not found")
             return render_template("quote.html")
         else:
-            quote = lookup(symbol)
             price = quote["price"]
-
-        # Insert new assets
             symbol = quote["symbol"]
             name = quote["name"]
-            db.execute("INSERT INTO assets (class, symbol, name, price) values ('stock',?,?,?)", symbol, name, price)
-            flash("Found {}: ${}".format(symbol, price))
-            if gohome:
-                return redirect("/")
-            else:
-                return render_template("quote.html", quote=quote, holdings=holdings)
-    else:
-        symbol = row[0]["symbol"]
-        quote = lookup(symbol)
-        price = quote["price"]
-        db.execute("UPDATE assets SET price=? WHERE symbol=?", price, symbol)
-        flash("Found {}: ${}".format(symbol, price))
-        if gohome:
-            return redirect("/")
-        else:
-            return render_template("quote.html", quote=quote, holdings=holdings)
+            db.execute("INSERT INTO assets (class, symbol, name, price) VALUES ('stock',?,?,?)", symbol, name, price)
 
+    # Lookup and update last price
+    else:
+        quote = lookup(row)
+        price = quote["price"]
+        # db.execute("UPDATE assets SET price=? WHERE symbol=?", price, symbol) # off for dev
+
+    flash("Found {}: ${}".format(symbol, price))
+    if "quick-search" in request.args:
+        return redirect("/")
+    else:
+        return render_template("quote.html", quote=quote, symbols=symbols)
 
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
     """Register user"""
 
-    # User arrives via GET
+    # GET
     if request.method == "GET":
         return render_template("register.html")
 
-    # User arrives via POST
+    # POST
     else:
+        
         # Validate input
-        if not request.form.get("username"):
+        username = request.form["username"]
+        if username is None:
             return render_template("register.html")
-        row = db.execute("SELECT * FROM users WHERE username = ?", request.form.get("username"))
+
+        row = db.execute("SELECT * FROM users WHERE username = ?", username)
         if not len(row) == 0:
             flash("sry, username taken")
             return redirect("/register")
-        if not request.form.get("password") or not request.form.get("password") == request.form.get("confirmation"):
+        if not request.form["password"] or not request.form["password"] == request.form["confirmation"]:
             flash("err bad password")
             return redirect("/register")
 
         # Add new user to db
-        username = request.form.get("username")
-        hash = generate_password_hash(password=request.form.get("password"))
+        pw = request.form["password"]
+        hash = generate_password_hash(pw)
         id = db.execute("INSERT INTO users (username, hash) VALUES (?, ?)", username, hash)
-        db.execute("insert into settings (user_id) values (?)", id)
+        db.execute("INSERT INTO settings (user_id) VALUES (?)", id)
         return redirect("/login")
 
 
@@ -495,186 +423,148 @@ def register():
 @login_required
 def sell():
     """Sell shares of stock"""
+
     # GET
     if request.method == "GET":
 
         # Get user holdings
         symbols = []
-        tb = db.execute("select symbol from assets, holdings where holdings.asset_id=assets.id\
-             and holdings.user_id=? and qty>0", session["user_id"])
-        if len(tb) == 0:
-            symbols = None
-        else:
-            for row in range(len(tb)):
-                symbols.append(tb[row]["symbol"])
+        p = session["portfolio"]
+        hodl = p.holdings
+        for i in range(len(hodl)):
+            if hodl[i]["qty"] != 0:
+                s = hodl[i]["symbol"]
+                symbols.append(s)
 
         return render_template("/sell.html", symbols=symbols)
 
     # POST
     user_id = session["user_id"]
-    if user_id == 1:
-        admin = True
-    else:
-        admin = False
+    max = None
+    dollars = None
+    try:
+        symbol = request.form.get("symbol").upper() # note this is a catch-all for 3 req forms
+    except:
+        return redirect("/sell")
+    if symbol == '':
+        return redirect("/sell")
 
-    # Max order size
+    # Max order size (SELL)
     if "maximum-order-size" in request.form:
+        max = True
+    
+    # Trade dollar value instead of shares
+    elif "dollars" in request.form:
+        value = round(float(request.form["dollars"]), 2)
+        dollars = True
+
+    # Quick order form - shares come from separate form, then follow same
+    elif "quick-order" in request.form:
         try:
-            symbol = request.form.get("symbol").upper()
-        except:
-            return redirect("/sell")
-
-        row = db.execute("SELECT * FROM assets WHERE symbol=?", symbol)
-        if len(row) == 0:   # bad symbol err, if owned we expect to return an asset record
-            flash("err bad symbol")
-            return redirect("/sell")
-        else:
-            asset_id = row[0]["id"]
-
-        # Get current cash and shares
-        row = db.execute("SELECT * FROM users WHERE id=?", user_id)
-        cash = row[0]["cash"]
-        row = db.execute("SELECT * FROM holdings WHERE asset_id=? AND user_id=?", asset_id, user_id)
-        if len(row) == 0:   # asset not in holdings
-            flash("rejected: you don't own that")
-            return redirect("/sell")
-        qty = row[0]["qty"]
-
-        # # Lookup quote
-        if admin:
-            row = db.execute("SELECT * FROM assets WHERE symbol=?", symbol)
-            price = row[0]["price"]
-        else:
-            if lookup(symbol) is None:      # Check is a valid symbol
-                flash("symbol not found")
-                return redirect("/sell")
-            else:
-                quote = lookup(symbol)
-                price = quote["price"]
-        cash += (price * qty)
-
-        # Update records - holdings, user cash, assets, trades
-        db.execute("update holdings set qty=0 where asset_id=? and user_id=?", asset_id, user_id)
-        db.execute("update users set cash=? where id=?", cash, user_id)
-        db.execute("update assets set price=? where id=?", price, asset_id)      # off for develop
-        db.execute("INSERT INTO trades (type, user_id, asset_id, qty, price, time)\
-                VALUES ('sell',?,?,?,?,datetime('now'))", user_id, asset_id, qty, price)
-
-        flash("executed")
-        return redirect("/")
-
-
-    else:
-        # Quick order form - symbol and shares come from separate form, then follow same
-        if "quick-order" in request.form:
             shares = round(float(request.form.get("shares")), 2)
-            exp = int(request.form.get("multiplier"))
-            symbol = request.form.get("symbol")
-            if not symbol:
-                flash('symbol err')
-                return redirect("/")
-            shares = (shares * exp)
+            multi = int(request.form.get("multiplier"))
+            shares = (shares * multi)
+        except:
+            flash("invalid quantity")
+            return redirect("/")
+        if not shares > 0:
+            flash("invalid quantity")
+            return redirect("/")
 
-        else: # Standard sell order
-            symbol = request.form.get("symbol").upper()
-            if symbol == '':
-                return redirect("/sell")
-            try:
-                shares = round(float(request.form.get("shares")), 2)
-            except:
-                return redirect("/sell")
-
-        row = db.execute("SELECT * FROM assets WHERE symbol=?", symbol)
-        if len(row) == 0:   # assume if owned, then symbol returns an asset id
-            flash("err: bad SYMBOL")
-            return render_template("sell.html")
-        elif len(row) != 1:
-            flash("backend err: failed table constraint, offender {}".format(symbol))
-            return render_template("sell.html")
-        else:
-            asset_id = row[0]["id"]
-
-        # Validate input
-        row = db.execute("SELECT id, qty FROM holdings\
-                WHERE holdings.asset_id=?\
-                AND holdings.user_id=?", asset_id, user_id)
-        if len(row) == 0 or row[0]["qty"] == 0:   # asset not in user holdings
-            flash("rejected: you don't own that")
+    # Standard sell order
+    else:
+        try:
+            shares = round(float(request.form.get("shares")), 2)
+        except:
+            flash("invalid quantity")
             return redirect("/sell")
-        elif len(row) != 1:   # should return 1 row
-            flash("backend err: failed table constraint, offender {}".format(symbol))
-            return render_template("sell.html")
-        else:
-            hodl_id = row[0]["id"]
-            qty = row[0]["qty"]
         if not shares or not shares > 0:
             flash("invalid quantity")
             return redirect("/sell")
-        if shares > qty:
-            flash("rejected: low user shares")
-            return redirect("/sell")
 
-        # Lookup quote
-        if user_id == 1:    # we are admin
-            row = db.execute("SELECT * FROM assets WHERE symbol=?", symbol)
-            price = row[0]["price"]
+    # Validate input
+    row = db.execute("SELECT * FROM assets WHERE symbol=?", symbol)
+    if len(row) == 0:   # if owned, then symbol should return an asset id
+        flash("err bad symbol")
+        return redirect("sell.html")
+    else:
+        asset_id = row[0]["id"]
+        last_price = row[0]["price"]
+
+    p = session["portfolio"]
+    hodl = p.holdings
+    cash = p.cash
+    held = None
+    qty = 0
+    for i in range(len(hodl)):
+        if symbol == hodl[i]["symbol"] and hodl[i]["qty"] > 0:
+            qty = hodl[i]["qty"]
+            held = True
+            break
+    if not held:
+        flash("rejected: you don't own that")
+        return redirect("/sell")
+    if max or dollars:
+        pass
+    elif shares > qty:
+        flash("rejected: low shares")
+        return redirect("/sell")
+
+    # Lookup quote
+    if dev:
+        price = last_price
+    else:
+        quote = lookup(symbol)
+        if quote is None:
+            flash("symbol not found")
+            return render_template("sell.html")
         else:
-            if not lookup(symbol):
-                flash("SYMBOL not found")
-                return render_template("sell.html")
-            else:
-                quote = lookup(symbol)
-                price = quote["price"]
+            price = quote["price"]
 
-        # Update records - last price, holdings, cash, trades
+    if max:
+        shares = qty # total owned before sale
+        qty = 0
+    elif dollars:
+        shares = round((value / price), 2)
         qty -= shares
-        row = db.execute("SELECT * FROM users WHERE id=?", user_id)
-        cash = row[0]["cash"]
-        cash += (shares * price)
+    else:
+        qty -= shares
 
-        db.execute("UPDATE assets SET price=? WHERE id=?", price, asset_id)   # off for develop
-        db.execute("UPDATE holdings SET qty=? WHERE id=?", qty, hodl_id)
-        db.execute("UPDATE users SET cash=? WHERE id=?", cash, user_id)
-        db.execute("INSERT INTO trades (type, user_id, asset_id, qty, price, time)\
-            VALUES ('sell',?,?,?,?,datetime('now'))", user_id, asset_id, shares, price)
+    cash += (shares * price)
 
-        if shares > 100:
-            flash("executed")
-        else:
-            flash("done")
-        return redirect("/")
+    # Update records - assets, holdings, users, trades
+    db.execute("UPDATE assets SET price=? WHERE id=?", price, asset_id)
+    db.execute("UPDATE holdings SET qty=? WHERE asset_id=? AND user_id=?", qty, asset_id, user_id)
+    db.execute("UPDATE users SET cash=? WHERE id=?", cash, user_id)
+    db.execute("INSERT INTO trades (type, user_id, asset_id, qty, price, time)\
+        VALUES ('sell',?,?,?,?,datetime('now'))", user_id, asset_id, shares, price)
+    if max or shares > 100:
+        flash("executed")
+    else:
+        flash("done")
+    return redirect("/")
 
 @app.route("/unwatch", methods=["POST"])
 @login_required
-def remove_holding():
+def unwatch():
     """Remove stock symbol from watchlist"""
 
-    # User's current holdings including watch only
-    tab = db.execute("SELECT symbol, holdings.asset_id FROM holdings, assets\
-        WHERE holdings.asset_id=assets.id\
-        AND holdings.user_id=?", session["user_id"])
-
-    # Remove from holdings table
-    for i in range(len(tab)):
-        if tab[i]["symbol"] in request.form:
-            asset_id = tab[i]["asset_id"]
-            db.execute("delete from holdings where asset_id=? and user_id=?", asset_id, session["user_id"])
-            return redirect("/")
+    row = db.execute("SELECT id FROM assets WHERE symbol=?", request.form["symbol"])
+    db.execute("DELETE FROM holdings WHERE asset_id=? AND user_id=?", row[0]["id"], session["user_id"])
+    return redirect("/")
 
 
 @app.route("/search", methods=["GET"])
 @login_required
 def search():
-    """Handle an automated request for database records"""
+    """Handle a scripted request for database records"""
 
     # List of symbols in user holdings
-    user_id = session["user_id"]
-    holdings = []
-    tb = db.execute("select symbol from assets, holdings where holdings.asset_id=assets.id\
-            and holdings.user_id=?", user_id)
-    for i in range(len(tb)):
-        symbol = tb[i]["symbol"]
-        holdings.append(symbol)
+    symbols = []
+    hodl = session["portfolio"].holdings
+    for i in range(1, len(hodl)):
+        s = hodl[i]["symbol"]
+        symbols.append(s)
 
     # Pull row of database matching symbol or name
     q = request.args.get("q").upper()
@@ -685,61 +575,65 @@ def search():
 
     # We pass db row and user portfolio to search.html
     # jinja: if symbol in watchlist, say so, else render button to add it
-    return render_template("search.html", row=row, holdings=holdings)
+    return render_template("search.html", row=row, symbols=symbols)
 
 
 @app.route("/watch", methods=["POST"])
 @login_required
-def add_watching():
+def watch():
     """Add a stock symbol to user watch list"""
 
-    s = request.form.get("symbol")      # sym comes directly from our db through /search route
+    s = request.form["symbol"]      # sym comes directly from our db through /search route
     if not s:
         flash('backend err see admin')
         return redirect("/quote")
     else:
-        row = db.execute("select id from assets where symbol=?", s)
+        row = db.execute("SELECT * FROM assets WHERE symbol=?", s)
         asset_id = row[0]["id"]
         user_id = session["user_id"]
-        db.execute("insert into holdings (asset_id, qty, user_id) values (?,0,?)", asset_id, user_id)
+        session["portfolio"].holdings += {
+            "symbol": s,
+            "name": row[0]["name"],
+            "qty": 0,
+            "price": row[0]["price"],
+            "value": 0,
+        }
+        db.execute("INSERT INTO holdings (asset_id, qty, user_id) VALUES (?,0,?)", asset_id, user_id)
         flash("added {}".format(s))
-        return render_template("quote.html", symbol=s)
+        return redirect("/quote")
 
 
 @app.route("/stat", methods=["GET"])
-def display_stats():
+def stats():
     """Display leaderboard for all users"""
 
     # We need list of user dicts sorted by portfolio sum
     list = []
 
-    # For each user, get largest holding and total value of holdings excluding idle cash
-    users = db.execute("select * from users")
+    # For each user, get largest holding and total value of holdings ex-cash
+    users = db.execute("SELECT * FROM users")
     for user in range(len(users)):
         id = users[user]["id"]
-        if "user_id" in session:
-            if id == session["user_id"]:    # if not logged in, we won't have a session?
-                thisuser = users[user]["username"]
-        else:
-            thisuser = None
+        name = users[user]["username"]
 
         # Largest symbol - 1 row
-        large = db.execute("select symbol, max(qty*price) from holdings, assets, users\
-                where holdings.asset_id=assets.id\
-                and holdings.user_id=users.id\
-                and holdings.user_id=?",id)
+        large = db.execute("SELECT symbol, max(qty*price) FROM holdings, assets, users\
+                WHERE holdings.asset_id=assets.id\
+                AND holdings.user_id=users.id\
+                AND holdings.user_id=?",id)
 
         # Total portfolio - 1 row
-        sum = db.execute("select username, sum(qty*price) from holdings, assets, users\
-                where holdings.asset_id=assets.id\
-                and holdings.user_id=users.id\
-                and holdings.user_id=?",id)
+        sum = db.execute("SELECT sum(qty*price) FROM holdings, assets, users\
+                WHERE holdings.asset_id=assets.id\
+                AND holdings.user_id=users.id\
+                AND holdings.user_id=?",id)
 
         if sum[0]["sum(qty*price)"] is None:     # lacking price data
             continue
         else:
             dict = {
-                    "name": sum[0]["username"],
+                    "user_id": id,
+                    "name": name,
                     "symbol": large[0]["symbol"],
                     "sum": round(float(sum[0]["sum(qty*price)"]), 2)
                     }
@@ -750,11 +644,10 @@ def display_stats():
             else:
                 for i in range(len(list)):
                     if dict["sum"] > list[i]["sum"]:      # linear search, we can do better
-                        idx = i
+                        list.insert(i, dict)
                         break
-                list.insert(idx, dict)
 
-    return render_template("stat.html", list=list, thisuser=thisuser)
+    return render_template("stat.html", list=list)
 
 
 @app.route("/publish", methods=["POST"])
@@ -763,4 +656,3 @@ def publish():
     """Send user to social network to share trades"""
     # #
     return apology("Not implemented")
-    return render_template("apologyImpl.html", message="Not implemented")
